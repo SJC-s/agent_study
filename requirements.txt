@@ -10,3 +10,5 @@ tavily-python
 fastapi 
 uvicorn
 python-multipart
+sqlalchemy
+pymysql
