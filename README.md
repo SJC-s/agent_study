@@ -15,7 +15,6 @@
 1. 저장소를 클론합니다:
 ```bash
 git clone [repository-url]
-cd chatbot_aiagent
 ```
 
 2. 필요한 패키지를 설치합니다:
@@ -29,25 +28,7 @@ pip install -r requirements.txt
 OPENAI_API_KEY=your-api-key-here
 ```
 
-## 실행 방법
-
-다음 명령어로 애플리케이션을 실행합니다:
-```bash
-streamlit run app.py
-```
-
-## 사용 방법
-
-1. 웹 브라우저에서 제공된 URL로 접속합니다 (기본적으로 http://localhost:8501)
-2. 채팅창에 질문이나 요청사항을 입력합니다
-3. AI 어시스턴트가 적절한 답변과 조언을 제공합니다
-
 ## 주의사항
 
 - OpenAI API 키가 필요합니다
 - API 사용량에 따라 비용이 발생할 수 있습니다 
-
-
-검색 엔진용 tavily-python
-Anthropic 모델 사용을 위한 langchain_anthropic
-LangGraph 핵심 라이브러리
