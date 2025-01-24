@@ -1,30 +1,46 @@
+# app_agent.py
+
 import os
 import re
 from dotenv import load_dotenv
-from typing import Annotated, List, Dict
-from typing_extensions import TypedDict
+from typing import List, Dict
 from datetime import datetime
+from fastapi import FastAPI, HTTPException
+from pydantic import BaseModel
+from fastapi.middleware.cors import CORSMiddleware
 
 # =========================
-# 1. LangChain, OpenAI, Tools
+# 기존 임포트
 # =========================
 from langchain_openai import ChatOpenAI
 from langchain_core.tools import tool
 from langchain.schema import HumanMessage, SystemMessage, AIMessage
 from langchain_core.messages import BaseMessage
-
-# =========================
-# 2. LangGraph 관련
-# =========================
 from langgraph.graph import StateGraph, START, END
 from langgraph.graph.message import add_messages
 from langgraph.prebuilt import ToolNode, tools_condition
 from langgraph.checkpoint.memory import MemorySaver
 
+# 환경 변수 로드
 load_dotenv()
 
-# ========== (A) 사용자 프로필 관리 ==========
+app = FastAPI()
 
+# CORS 설정: React 앱의 URL을 허용
+origins = [
+    "http://localhost:3000",  # React 앱 URL
+    # 배포 시 다른 origins 추가
+]
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=origins,  # 프론트엔드 URL로 업데이트
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+# ========== (A) 사용자 프로필 관리 ==========
 class UserProfile:
     def __init__(self):
         self.data = {
@@ -58,7 +74,6 @@ class UserProfile:
         return summary
 
 # ========== (B) 도구 정의 ==========
-
 def fake_job_search(query: str) -> str:
     """
     고령자 맞춤 일자리 정보를 검색하는 가상 함수
@@ -123,10 +138,7 @@ def generate_resume_template(info: str) -> str:
 직무 경력 사항:
 """
 
-
-
 # ========== (C) LangChain 설정 ==========
-
 SYSTEM_MESSAGE = """당신은 50세 이상 고령층의 취업을 돕는 AI 취업 상담사입니다.
 사용자의 경험과 강점을 파악하여 맞춤형 일자리를 추천하고, 구직 활동을 지원합니다.
 
@@ -162,9 +174,10 @@ def setup_openai():
     return llm
 
 # ========== (D) LangGraph 구성 ==========
+from langgraph.graph import StateGraph, START, END
 
-class State(TypedDict):
-    messages: Annotated[List[BaseMessage], add_messages]
+class StateDict(BaseModel):
+    messages: List[BaseMessage]
     user_profile: Dict
 
 def build_graph():
@@ -176,25 +189,38 @@ def build_graph():
     llm_with_tools = llm.bind_tools(tools)
 
     # 2) 그래프 빌더 초기화
-    graph_builder = StateGraph(State)
-
+    graph_builder = StateGraph(StateDict)
+    
     # 3) 메인 챗봇 노드
-    def chatbot_node(state: State):
-        # 시스템 메시지와 사용자 프로필 정보 추가
-        messages = [SystemMessage(content=SYSTEM_MESSAGE)]
-        if "messages" in state and state["messages"]:
-            messages.extend(state["messages"])
-        
-        # 프로필 정보를 문자열로 변환하여 컨텍스트에 추가
-        if "user_profile" in state:
-            profile_info = f"\n현재 사용자 정보:\n{str(state['user_profile'])}"
-            messages.append(SystemMessage(content=profile_info))
-        
+    def chatbot_node(state: StateDict):
         try:
+            # 시스템 메시지와 사용자 프로필 정보 추가
+            messages = [SystemMessage(content=SYSTEM_MESSAGE)]
+            
+            # 기존 메시지 추가
+            if hasattr(state, 'messages') and state.messages:
+                for msg in state.messages:
+                    if isinstance(msg, (HumanMessage, SystemMessage, AIMessage)):
+                        messages.append(msg)
+                    elif isinstance(msg, dict) and 'content' in msg:
+                        if msg.get('role') == 'user':
+                            messages.append(HumanMessage(content=msg['content']))
+                        elif msg.get('role') == 'assistant':
+                            messages.append(AIMessage(content=msg['content']))
+                        elif msg.get('role') == 'system':
+                            messages.append(SystemMessage(content=msg['content']))
+            
+            # 프로필 정보를 문자열로 변환하여 컨텍스트에 추가
+            if hasattr(state, 'user_profile') and state.user_profile:
+                profile_info = f"\n현재 사용자 정보:\n{str(state.user_profile)}"
+                messages.append(SystemMessage(content=profile_info))
+            
+            # LLM 호출
             response = llm_with_tools.invoke(messages)
             return {"messages": [response]}
+            
         except Exception as e:
-            print(f"챗봇 응답 생성 중 오류: {str(e)}")
+            print(f"챗봇 노드 처리 중 오류: {str(e)}")
             return {"messages": [AIMessage(content="죄송합니다. 응답을 생성하는 중에 문제가 발생했습니다. 다시 한 번 말씀해 주시겠어요?")]}
 
     graph_builder.add_node("chatbot", chatbot_node)
@@ -213,71 +239,94 @@ def build_graph():
     graph = graph_builder.compile(checkpointer=memory)
     return graph
 
-# ========== (E) 콘솔 대화 실행 ==========
+# 그래프 초기화
+graph = build_graph()
 
-def run_console_chat():
-    print("👋 고령자 취업 지원 AI 상담사입니다.")
-    print("\n다음과 같은 도움을 드릴 수 있습니다:")
-    print("- 경력과 경험을 고려한 맞춤형 일자리 추천")
-    print("- 이력서와 자기소개서 작성 도움")
-    print("- 고령자 특화 취업 정보 제공")
-    print("- 면접 준비 도움")
-    print("- 온라인 취업 사이트 활용 방법 안내")
-    print("\n대화를 종료하시려면 '종료' 또는 'quit'를 입력해주세요.")
+# ========== (E) API 엔드포인트 ==========
+# FastAPI 요청 모델 정의
+class ChatRequest(BaseModel):
+    user_message: str  # message -> user_message로 변경
+    user_profile: Dict = {
+        "age": None,
+        "location": None,
+        "jobType": None,  # 프론트엔드의 필드명과 일치
+        "experience": [],
+        "preferred_jobs": [],
+        "skills": [],
+        "education": None,
+        "job_status": None
+    }
 
+@app.post("/chat/")
+async def chat_endpoint(request: ChatRequest):
+    if not request.user_message:
+        raise HTTPException(status_code=400, detail="사용자 메시지가 필요합니다.")
+    
     try:
-        # 그래프 생성
-        graph = build_graph()
+        # 사용자 프로필 초기화 또는 업데이트
+        user_profile = request.user_profile
         
-        # 사용자 프로필 초기화
-        user_profile = UserProfile()
+        # 메시지에서 사용자 정보 추출 및 프로필 업데이트
+        info = extract_user_info_from_text(request.user_message)
+        for key, value in info.items():
+            if key in user_profile:
+                if isinstance(user_profile[key], list):
+                    if isinstance(value, list):
+                        user_profile[key].extend(value)
+                    else:
+                        user_profile[key].append(value)
+                else:
+                    user_profile[key] = value
+
+        # jobType을 preferred_jobs에 추가
+        if user_profile.get("jobType"):
+            if "preferred_jobs" not in user_profile:
+                user_profile["preferred_jobs"] = []
+            if user_profile["jobType"] not in user_profile["preferred_jobs"]:
+                user_profile["preferred_jobs"].append(user_profile["jobType"])
+
+        # 상태 업데이트
+        state = StateDict(
+            messages=[HumanMessage(content=request.user_message)],
+            user_profile=user_profile
+        )
+
+        # 그래프 실행
+        events = graph.stream(
+            state.model_dump(),  # dict() 대신 model_dump() 사용
+            {"configurable": {"thread_id": "demo-user"}},
+            stream_mode="values"
+        )
         
-        # 설정
-        config = {"configurable": {"thread_id": "demo-user"}}
-
-        print("\nAI 상담사: 안녕하세요! 먼저 나이가 어떻게 되시나요?")
-
-        while True:
-            user_input = input("\n사용자: ").strip()
-            
-            if user_input.lower() in ["종료", "quit", "exit"]:
-                print("\nAI 상담사: 상담을 종료합니다. 좋은 하루 되세요!")
-                break
-                
-            if not user_input:
-                print("메시지를 입력해주세요.")
-                continue
-
-            # 사용자 정보 추출 및 업데이트
-            info = extract_user_info_from_text(user_input)
-            for key, value in info.items():
-                user_profile.update(key, value)
-
-            try:
-                # 그래프 실행
-                events = graph.stream(
-                    {
-                        "messages": [HumanMessage(content=user_input)],
-                        "user_profile": user_profile.data
-                    },
-                    config,
-                    stream_mode="values"
-                )
-
-                # 응답 처리
-                for event in events:
-                    if "messages" in event:
-                        ai_msg = event["messages"][-1]
-                        print(f"\nAI 상담사: {ai_msg.content}")
-                        print("\n" + "-"*50)
-            except Exception as e:
-                print(f"\n오류가 발생했습니다: {str(e)}")
-                print("다시 시도해주세요.")
-                print("\n" + "-"*50)
-
+        # 응답 수집
+        responses = []
+        for event in events:
+            if "messages" in event and event["messages"]:
+                for msg in event["messages"]:
+                    if isinstance(msg, (AIMessage, SystemMessage)):
+                        responses.append(msg.content)
+                    elif isinstance(msg, dict) and 'content' in msg:
+                        responses.append(msg['content'])
+        
+        return {
+            "responses": responses,
+            "user_profile": user_profile
+        }
+    
     except Exception as e:
-        print(f"시스템 초기화 중 오류가 발생했습니다: {str(e)}")
-        print("프로그램을 종료합니다.")
+        print(f"chat_endpoint 오류: {str(e)}")
+        raise HTTPException(
+            status_code=500,
+            detail=f"메시지 처리 중 오류가 발생했습니다: {str(e)}"
+        )
 
-if __name__ == "__main__":
-    run_console_chat()
+# 서버 시작 시 실행할 코드
+@app.on_event("startup")
+async def startup_event():
+    # OpenAI API 키 확인
+    if not os.environ.get("OPENAI_API_KEY"):
+        raise ValueError("OPENAI_API_KEY가 설정되지 않았습니다.")
+    
+    # 모델 초기화
+    global graph
+    graph = build_graph()
