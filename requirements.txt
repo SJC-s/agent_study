@@ -1,0 +1,11 @@
+python-dotenv==1.0.0
+openai
+langchain
+langchain-openai
+langgraph 
+langsmith 
+langchain_anthropic
+langchain_community
+tavily-python
+fastapi 
+uvicorn
